@@ -247,3 +247,38 @@ kubectl apply -f argocd/root.yaml
 (+ `./build-images.sh ../staybook-src v1` tant que les images ne viennent pas d'un registre, cf. partie 4.)
 
 `root` crée ensuite tout seul les 3 projets, les 4 Applications et les 3 namespaces. Comme prévu à la question 2, ce qui reste hors de Git se résume au token du dépôt et à l'amorce `root.yaml`.
+
+
+### Question 18
+
+_Décomposez `rag-service.concierge.svc.cluster.local` : que désigne chaque partie ? Vérifiez depuis un pod de dev que les deux formes ne sont pas équivalentes._
+
+| Partie | Signification |
+|---|---|
+| `rag-service` | le nom du Service |
+| `concierge` | le namespace où il se trouve |
+| `svc` | c'est un Service (et pas un pod) |
+| `cluster.local` | le domaine DNS du cluster |
+
+Depuis le gateway de dev :
+
+```
+$ kubectl -n staybook-dev exec deploy/gateway -- wget -qO- http://rag-service.concierge.svc.cluster.local:3003/health
+{"status":"ok","service":"rag"}
+
+$ kubectl -n staybook-dev exec deploy/gateway -- wget -qO- -T 3 http://rag-service:3003/health
+wget: bad address 'rag-service:3003'
+```
+
+Le nom court est complété avec le namespace du pod, donc il cherche `rag-service.staybook-dev…`, qui n'existe pas. Pour joindre un autre namespace, il faut le nom complet.
+
+
+### Question 19
+
+_Lisez `HOTELS_URL` dans `base/concierge/20-rag-service.yaml` : le concierge indexe les hôtels de prod. Si un développeur ajoute un hôtel dans la base de dev, le concierge de dev le connaîtra-t-il ? Est-ce un problème pour un environnement de dev ? Comment une entreprise règle-t-elle ce genre de question ?_
+
+`HOTELS_URL` vaut `http://hotels-service.staybook-prod.svc.cluster.local:3001` : le concierge lit les hôtels de **prod**.
+
+Donc non : un hôtel ajouté dans la base de dev n'apparaîtra pas dans les réponses du concierge, même depuis le site de dev. Pour tester une nouvelle fonctionnalité en dev, c'est gênant : dev dépend de la prod et ne peut pas tester l'IA sur ses propres données.
+
+En entreprise, on traite ça comme un **service mutualisé** géré par une équipe **plateforme** : un seul service partagé, mais qui sait servir plusieurs environnements (paramètre ou index par environnement, une collection Qdrant par env). Ou bien on accepte de le dupliquer en dev quand les ressources le permettent. Ici on a choisi de le partager, faute de mémoire pour deux Ollama.
