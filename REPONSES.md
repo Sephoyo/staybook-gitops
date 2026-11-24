@@ -467,9 +467,16 @@ Réponse :
 
 Le Deployment `front` passe à 3 réplicas, puis **revient presque aussitôt à 1** (en quelques secondes). Dans le terminal 1 : `READY 1/1 → 1/3 → 3/3`, puis retour à `1/1`, et les 2 pods en trop sont supprimés.
 
-C'est l'**`argocd-application-controller`** qui a agi. Il surveille les ressources du cluster en temps réel (watch), pas seulement toutes les 3 minutes. Il voit la modification, compare à Git (`replicas: 1`), constate la dérive et, comme `selfHeal: true` est activé, relance un sync. Dans ses logs, on retrouve des lignes pour `staybook` du type `Initiated automated sync to '<commit>'` et `Sync operation … succeeded`, avec le statut `OutOfSync → Synced`.
+C'est l'**`argocd-application-controller`** qui a agi. Il surveille les ressources du cluster en temps réel (watch), pas seulement toutes les 3 minutes. Il voit la modification, compare à Git (`replicas: 1`), constate la dérive et, comme `selfHeal: true` est activé, relance un sync. Trace dans les logs du controller (extrait) :
 
-Avec `kubectl -n staybook delete deploy gateway`, le controller **recrée le Deployment** (et donc un pod) en quelques secondes. Pendant ces quelques secondes, le front (page HTML) reste accessible, mais les appels à l'API (liste des hôtels, réservations, concierge) échouent tant que le nouveau pod gateway n'est pas `Ready`. La coupure est courte et se répare toute seule. Sans Argo CD, le gateway serait resté supprimé jusqu'à ce que quelqu'un s'en aperçoive.
+```
+"msg":"Initiated automated sync to 'c5d0e3c2e747aa5083fd63ffb339315807cf2815'","reason":"OperationStarted","time":"2026-11-24T14:01:19Z"
+"msg":"Partial sync operation to c5d0e3c2e747aa5083fd63ffb339315807cf2815 succeeded","reason":"OperationCompleted","time":"2026-11-24T14:01:19Z"
+```
+
+Le sync automatique est lancé et terminé dans la même seconde. Argo CD ne refait qu'un **sync partiel** : il ne réapplique que la ressource qui a dérivé, vers le commit courant.
+
+Avec `kubectl -n staybook delete deploy gateway`, le controller **recrée le Deployment** en quelques secondes (`gateway 1/1`, `AGE 18s` juste après). **Le site est resté accessible** : la page est servie par le pod `front`, qui n'a pas été touché. Seuls les appels à l'API peuvent échouer pendant les quelques secondes où aucun pod gateway n'est `Ready`, et le selfHeal referme cette fenêtre presque aussitôt. Sans Argo CD, le gateway serait resté supprimé jusqu'à ce que quelqu'un s'en aperçoive.
 
 
 ### Question 30
