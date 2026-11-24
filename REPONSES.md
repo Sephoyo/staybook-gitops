@@ -1,6 +1,6 @@
 # Réponses — TP Migrer StayBook vers Kubernetes avec Argo CD
 
-**Nom(s) :**  
+**Nom(s) :** Joseph Baert  
 **Dépôt GitHub :** https://github.com/Sephoyo/staybook-gitops  
 
 
