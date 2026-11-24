@@ -330,3 +330,57 @@ Les values sont **directement dans l'Application**, sous `spec.source.helm.value
 C'est le **repo-server d'Argo CD** qui exécute Helm, à chaque refresh : il fait un `helm template` pour générer les manifests, puis le controller les applique comme n'importe quel YAML.
 
 `helm list -n kube-system` renverra une **liste vide** : Argo CD n'utilise Helm que pour générer le YAML, il ne fait jamais `helm install`. Il n'y a donc pas de « release » Helm dans le cluster (pas de Secret `sh.helm.release…`). C'est Argo CD qui suit l'installation, pas Helm.
+
+
+### Question 23
+
+_Le Secret `sealed-secrets-key…` : qui l'a créé, de quel type est-il, que contient-il ? Si ce cluster est perdu sans l'avoir sauvegardé, que deviennent les SealedSecrets commités dans Git ? Cherchez dans la documentation du projet comment on s'en prémunit._
+
+```
+NAME                      TYPE                DATA   AGE
+sealed-secrets-keyjmcvn   kubernetes.io/tls   2      18s
+```
+
+C'est le **contrôleur Sealed Secrets** qui l'a créé à son premier démarrage. Il est de type **`kubernetes.io/tls`** et contient 2 clés : `tls.crt` (le certificat, avec la clé **publique**) et `tls.key` (la clé **privée**, qui sert à déchiffrer).
+
+Si le cluster est perdu sans sauvegarde, la clé privée est perdue : les SealedSecrets dans Git deviennent **indéchiffrables**. Il faut alors rechiffrer tous les secrets à partir des valeurs en clair, si on les a encore.
+
+Pour s'en prémunir, la doc conseille de **sauvegarder la clé** et de la garder hors de Git (coffre-fort, gestionnaire de secrets) :
+
+```bash
+kubectl -n kube-system get secret -l sealedsecrets.bitnami.com/sealed-secrets-key -o yaml > sealed-secrets-key.backup.yaml
+```
+
+Pour la restaurer sur un nouveau cluster, on applique ce fichier avant de redémarrer le contrôleur. À noter : le contrôleur génère une nouvelle clé tous les 30 jours et garde les anciennes, donc il faut sauvegarder régulièrement.
+
+
+### Question 24
+
+_Par quel chemin `kubeseal --fetch-cert` a-t-il obtenu ce certificat (il n'a aucune option réseau) ? Ce certificat est-il secret ? Peut-on le commiter ? Pourquoi est-ce même utile pour vos collègues ?_
+
+`kubeseal` utilise le **kubeconfig** (comme `kubectl`) : il passe par l'**API server** de Kubernetes, qui relaie la requête vers le Service `sealed-secrets-controller` dans `kube-system` (proxy de service). Le contrôleur renvoie son certificat.
+
+Ce certificat n'est **pas secret** : il ne contient que la clé **publique**, qui sert uniquement à **chiffrer**. On peut le commiter sans risque.
+
+C'est même utile : un collègue (ou la CI) peut chiffrer un secret avec `kubeseal --cert pub-cert.pem` **sans avoir accès au cluster**.
+
+
+### Question 25
+
+_Que contient `encryptedData` ? Quelqu'un qui clone votre dépôt peut-il retrouver le mot de passe ? De quoi aurait-il besoin ?_
+
+```yaml
+kind: SealedSecret
+metadata:
+  name: postgres-hotels
+  namespace: staybook-dev
+spec:
+  encryptedData:
+    POSTGRES_DB: AgA3DD+OCj6AptV72pXrVGpqcJQf...
+    POSTGRES_PASSWORD: AgB0ijJrh7CjybZwkrTxh/0z...
+    POSTGRES_USER: AgBdzER/wwil0/q5CEbAxKgh...
+```
+
+`encryptedData` contient chaque clé du Secret (`POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`), **chiffrée** avec la clé publique du contrôleur. Ce n'est pas du base64 : on ne peut pas le décoder.
+
+Quelqu'un qui clone le dépôt **ne peut pas** retrouver le mot de passe. Il lui faudrait la **clé privée** du contrôleur (le Secret `sealed-secrets-key…` de `kube-system`), donc un accès au cluster avec le droit de lire les secrets de `kube-system`.
