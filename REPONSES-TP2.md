@@ -131,3 +131,119 @@ Dans un dépôt GitOps, **l'historique Git est l'historique des déploiements** 
 Repartir d'un dépôt neuf aurait effacé tout ça.
 
 Exemple de question d'auditeur : *« Quelle version du front était en production le 24 novembre vers 15 h 07, et qui l'a déployée ? »* `git log` répond : `d296892 feat: front v3 (image inexistante)`, avec son auteur et sa date. On voit aussi qu'elle a été annulée une minute plus tard par `ad3db13 Revert …`.
+
+
+### Question 9
+
+_Vous n'avez jamais dit à Argo CD « c'est du Kustomize ». Comment l'a-t-il su ? Que se passerait-il si `kustomization.yaml` n'existait pas dans `overlays/dev` ?_
+
+Argo CD détecte le type tout seul : il a trouvé un `kustomization.yaml` dans `overlays/dev`. `kubectl -n argocd get app staybook-dev -o jsonpath='{.status.sourceType}'` renvoie bien `Kustomize`.
+
+Sans ce fichier, il traiterait le dossier comme du YAML brut (*Directory*). Ici, il n'y aurait plus rien à déployer, puisque les manifests sont dans `base/` et pas dans `overlays/dev`.
+
+
+### Question 10
+
+_Posez une question au concierge sur http://localhost:8081. Que se passe-t-il ? Rapprochez-le de la valeur de `RAG_URL` notée à la question 4._
+
+Le concierge ne répond pas : `Error occurred while trying to proxy: localhost/chat`. Les logs du gateway montrent :
+
+```
+[HPM] Error occurred while proxying request localhost/chat to http://rag-service.concierge.svc.cluster.local:3003/ [ENOTFOUND]
+```
+
+`RAG_URL` pointe vers le namespace `concierge`, qui n'existe pas encore : le nom DNS ne se résout pas. Le reste du site (liste des hôtels) marche.
+
+
+### Question 11
+
+_Ces deux Applications ont été créées par la CLI. Où vivent-elles ? Si le cluster disparaît, ou si un collègue doit en monter un identique, que faut-il retaper ? Formulez le problème que la partie 2 va résoudre._
+
+Elles n'existent que dans le cluster, comme objets `Application` dans le namespace `argocd`. Elles ne sont pas dans Git. Si le cluster disparaît, il faut retaper les deux `argocd app create` avec toutes leurs options.
+
+Le problème : la définition des Applications doit être versionnée dans Git, comme le reste, pour qu'un seul apply suffise à tout recréer.
+
+
+### Question 12
+
+_Dans `00-projects.yaml`, pour chacun des trois projets, relevez : les dépôts autorisés, les namespaces de destination autorisés, les objets « cluster » autorisés. Pourquoi `platform` a-t-il besoin de `*/*` alors que `staybook-dev` n'autorise que `Namespace` ? Pourquoi `Namespace` quand même ?_
+
+| Projet | Dépôts autorisés | Namespaces autorisés | Objets cluster autorisés |
+|---|---|---|---|
+| `staybook-dev` | `staybook-gitops` | `staybook-dev` | `Namespace` |
+| `staybook-prod` | `staybook-gitops` | `staybook-prod` | `Namespace` |
+| `platform` | `staybook-gitops` + `bitnami.github.io/sealed-secrets` (chart Helm) | `concierge`, `kube-system` | tout (`*/*`) |
+
+`platform` installe Sealed Secrets, qui crée des objets globaux (une CRD, un ClusterRole, un ClusterRoleBinding) : il lui faut donc tous les types cluster. StayBook n'a besoin que d'objets dans son namespace.
+
+`Namespace` reste autorisé à cause de `CreateNamespace=true` : Argo CD doit pouvoir créer le namespace, qui est lui-même un objet cluster.
+
+
+### Question 13
+
+_Pourquoi les AppProjects portent-ils `sync-wave: "-1"` ? Que se passerait-il si une Application était créée avant son projet ?_
+
+La vague `-1` passe avant la vague `0` des Applications : `root` crée d'abord les projets, puis les Applications qui y font référence.
+
+Une Application dont le projet n'existe pas encore est en erreur (condition `InvalidSpecError`, « application references project … which does not exist ») et n'est pas synchronisée tant que le projet n'est pas créé.
+
+
+### Question 14
+
+_Chaque Application porte le finalizer `resources-finalizer.argocd.argoproj.io`. Cherchez ce qu'il fait. Rapprochez-le du `prune: true` de `root` : si vous supprimez `argocd/apps/31-staybook-prod.yaml` de Git, que se passe-t-il, en cascade ? Et sans finalizer ?_
+
+Le finalizer dit à Argo CD : avant de supprimer l'Application, supprime toutes les ressources qu'elle a déployées.
+
+Si on supprime `31-staybook-prod.yaml` de Git, alors en cascade :
+1. `root` (avec `prune: true`) supprime l'Application `staybook-prod` ;
+2. grâce au finalizer, Argo CD supprime d'abord tout ce qu'elle gérait : Deployments, Services, StatefulSets, Secrets… La prod disparaît.
+
+Sans finalizer, seule l'Application est supprimée : les pods de prod continuent de tourner, mais plus rien ne les gère (ressources « orphelines »).
+
+
+### Question 15
+
+_Les Applications `staybook-dev` et `staybook-prod` existaient déjà (créées en CLI, projet `default`). Qu'a fait Argo CD en trouvant les mêmes noms dans Git : erreur, doublon, ou autre chose ? Vérifiez leur projet maintenant._
+
+Ni erreur ni doublon : `root` a **adopté** les Applications existantes et les a mises à jour avec la version de Git. Une Application est identifiée par son nom dans le namespace `argocd` : même nom = même objet.
+
+Leur projet est maintenant `staybook-dev` et `staybook-prod` au lieu de `default` :
+
+```
+NAME                  PROJECT        STATUS  HEALTH
+argocd/staybook-dev   staybook-dev   Synced  Healthy
+argocd/staybook-prod  staybook-prod  Synced  Healthy
+```
+
+La date de création de `staybook-dev` n'a pas changé (celle de la CLI) : l'objet n'a pas été recréé, seulement modifié. Les pods n'ont pas redémarré.
+
+
+### Question 16
+
+_`kubectl apply` a affiché un avertissement sur le finalizer (`prefer a domain-qualified finalizer name`). Que reproche Kubernetes à ce nom ? Est-ce bloquant ?_
+
+```
+Warning: metadata.finalizers: "resources-finalizer.argocd.argoproj.io": prefer a domain-qualified finalizer name including a path (/) to avoid accidental conflicts with other finalizer writers
+```
+
+Kubernetes recommande des noms de finalizer au format `domaine/nom` (ex. `argocd.argoproj.io/resources-finalizer`), pour éviter que deux outils utilisent le même nom. Celui d'Argo CD n'a pas de `/`.
+
+Ce n'est **pas bloquant** : c'est un simple avertissement, l'Application a bien été créée (`application.argoproj.io/root created`).
+
+
+### Question 17
+
+_Faites le compte : pour reconstruire tout ce cluster à partir de zéro (Argo CD, 3 projets, 4 Applications, 3 namespaces applicatifs), combien de commandes faut-il ? Écrivez-les. Comparez avec votre réponse à la question 2._
+
+Quatre commandes, plus la construction des images :
+
+```bash
+kind create cluster --config kind-config.yaml
+kubectl apply -k argocd-install --server-side
+argocd repo add https://github.com/Sephoyo/staybook-gitops.git --username Sephoyo --password <token>
+kubectl apply -f argocd/root.yaml
+```
+
+(+ `./build-images.sh ../staybook-src v1` tant que les images ne viennent pas d'un registre, cf. partie 4.)
+
+`root` crée ensuite tout seul les 3 projets, les 4 Applications et les 3 namespaces. Comme prévu à la question 2, ce qui reste hors de Git se résume au token du dépôt et à l'amorce `root.yaml`.
