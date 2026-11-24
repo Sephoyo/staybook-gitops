@@ -282,3 +282,18 @@ _Lisez `HOTELS_URL` dans `base/concierge/20-rag-service.yaml` : le concierge ind
 Donc non : un hôtel ajouté dans la base de dev n'apparaîtra pas dans les réponses du concierge, même depuis le site de dev. Pour tester une nouvelle fonctionnalité en dev, c'est gênant : dev dépend de la prod et ne peut pas tester l'IA sur ses propres données.
 
 En entreprise, on traite ça comme un **service mutualisé** géré par une équipe **plateforme** : un seul service partagé, mais qui sait servir plusieurs environnements (paramètre ou index par environnement, une collection Qdrant par env). Ou bien on accepte de le dupliquer en dev quand les ressources le permettent. Ici on a choisi de le partager, faute de mémoire pour deux Ollama.
+
+
+### Question 20
+
+_Quel statut et quelle condition porte `staybook-dev` ? Recopiez le message. Les pods de dev ont-ils été touchés ? Qui a bloqué, et grâce à quel objet ?_
+
+`staybook-dev` passe en `Unknown / Unknown` avec la condition **`InvalidSpecError`** :
+
+```
+InvalidSpecError  application destination server 'https://kubernetes.default.svc' and namespace 'staybook-prod' do not match any of the allowed destinations in project 'staybook-dev'
+```
+
+Les pods de dev n'ont pas été touchés (toujours les mêmes, aucun redémarrage), et rien n'a été déployé dans `staybook-prod`.
+
+C'est **Argo CD** qui a bloqué, grâce à l'**AppProject `staybook-dev`** : ses `destinations` n'autorisent que le namespace `staybook-dev`. L'Application a bien été modifiée par `root`, mais Argo CD refuse de la synchroniser vers un namespace interdit.
