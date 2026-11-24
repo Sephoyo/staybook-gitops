@@ -566,6 +566,11 @@ Chaque ligne de `argocd app history staybook` (ID, date de sync, révision) cont
 | 4 | `3d162be` | test: ConfigMap pour le prune |
 | 5 | `e691d18` | test: suppression du ConfigMap de test |
 | 6 | `d296892` | feat: front v3 (image inexistante) |
+| 7 | `e691d18` | **rollback (a)** `argocd app rollback staybook 5` : redéploie une **ancienne** révision, sans nouveau commit |
+| 8 | `d296892` | auto-sync réactivé (`kubectl apply` de l'Application) **avant** que le revert soit lu : Argo CD resynchronise HEAD, donc la v3 cassée |
+| 9 | `ad3db13` | **revert (b)** `Revert "feat: front v3 (image inexistante)"` : retour à v2 par Git |
+
+Les entrées 7 et 8 illustrent la question 33 : le rollback n'existe que dans Argo CD. Dès que l'auto-sync est réactivé, le cluster revient à ce que dit Git. Seul le `git revert` (entrée 9) corrige durablement.
 
 Le commit `c5d0e3c` (auto-sync) n'a pas d'entrée : il ne modifie que `argocd/`, dossier que l'Application `staybook` (path `apps/staybook`) ne surveille pas. Le rollback (a) apparaît comme une entrée supplémentaire qui redéploie une **ancienne** révision. Le `git revert` apparaît comme un nouveau commit « Revert … ».
 
@@ -590,12 +595,38 @@ Personne ne déploie autrement qu'en commitant (les droits d'écriture sur le cl
 ```
 SOURCE  https://github.com/Sephoyo/staybook-gitops.git
 ID      DATE                           REVISION
-0       2026-11-23 18:50:51 +0100 CET  HEAD (7231e31)
+0       2026-11-24 14:39:00 +0100 CET  HEAD (7231e31)
+1       2026-11-24 14:52:24 +0100 CET  HEAD (cac301b)
+2       2026-11-24 14:56:38 +0100 CET  HEAD (41be646)
+3       2026-11-24 15:03:23 +0100 CET  HEAD (d4ece1c)
+4       2026-11-24 15:05:43 +0100 CET  HEAD (3d162be)
+5       2026-11-24 15:06:13 +0100 CET  HEAD (e691d18)
+6       2026-11-24 15:07:06 +0100 CET  HEAD (d296892)
+7       2026-11-24 15:08:23 +0100 CET  HEAD (e691d18)
+8       2026-11-24 15:08:53 +0100 CET  HEAD (d296892)
+9       2026-11-24 15:09:00 +0100 CET  HEAD (ad3db13)
 ```
 
 - Sortie de `argocd app list` :
 
 ```
-NAME             CLUSTER                         NAMESPACE  PROJECT  STATUS  HEALTH   SYNCPOLICY  CONDITIONS  REPO                                            PATH           TARGET
-argocd/staybook  https://kubernetes.default.svc  staybook   default  Synced  Healthy  Manual      <none>      https://github.com/Sephoyo/staybook-gitops.git  apps/staybook  HEAD
+NAME              CLUSTER                         NAMESPACE  PROJECT  STATUS  HEALTH   SYNCPOLICY  CONDITIONS  REPO                                            PATH            TARGET
+argocd/concierge  https://kubernetes.default.svc  staybook   default  Synced  Healthy  Auto-Prune  <none>      https://github.com/Sephoyo/staybook-gitops.git  apps/concierge  HEAD
+argocd/staybook   https://kubernetes.default.svc  staybook   default  Synced  Healthy  Auto-Prune  <none>      https://github.com/Sephoyo/staybook-gitops.git  apps/staybook   HEAD
+```
+
+- Sortie de `git log --oneline` (pour relier l'historique Argo CD aux commits, cf. Q34) :
+
+```
+ba401da docs: réponses 29, 33 et 34 avec les sorties réelles
+ad3db13 Revert "feat: front v3 (image inexistante)"
+d296892 feat: front v3 (image inexistante)
+e691d18 test: suppression du ConfigMap de test
+3d162be test: ConfigMap pour le prune
+d4ece1c feat: front v2
+c5d0e3c feat: auto-sync avec prune et selfHeal pour staybook et concierge
+41be646 feat: hotels-service passe à 2 réplicas
+cac301b docs: réponses aux questions 1 à 34
+1019162 feat: Applications staybook et concierge pointent vers mon dépôt
+7231e31 feat: StayBook manifests + Argo CD install (v1)
 ```
