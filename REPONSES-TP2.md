@@ -384,3 +384,72 @@ spec:
 `encryptedData` contient chaque clé du Secret (`POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`), **chiffrée** avec la clé publique du contrôleur. Ce n'est pas du base64 : on ne peut pas le décoder.
 
 Quelqu'un qui clone le dépôt **ne peut pas** retrouver le mot de passe. Il lui faudrait la **clé privée** du contrôleur (le Secret `sealed-secrets-key…` de `kube-system`), donc un accès au cluster avec le droit de lire les secrets de `kube-system`.
+
+
+### Question 26
+
+_Décrivez ce qu'Argo CD a fait du Secret `postgres-hotels` qu'il gérait jusque-là, et qui l'a recréé. À quoi sert l'`ownerReference` que vous venez d'afficher ?_
+
+Juste après le push :
+
+```
+Secret        staybook-dev  postgres-hotels        OutOfSync
+SealedSecret  staybook-dev  postgres-hotels        OutOfSync  Missing
+```
+
+Le Secret n'est plus dans Git, donc Argo CD (avec `prune: true`) l'a **supprimé**, et il a créé le **SealedSecret** à la place. Ensuite, c'est le **contrôleur Sealed Secrets** qui a déchiffré le SealedSecret et **recréé** le Secret `postgres-hotels` (âge `0s`) :
+
+```
+sealedsecret.bitnami.com/postgres-hotels    SYNCED True
+secret/postgres-hotels               Opaque   3
+```
+
+L'`ownerReference` vaut `SealedSecret/postgres-hotels` : le Secret **appartient** au SealedSecret. Si on supprime le SealedSecret, Kubernetes supprime le Secret avec lui (garbage collection). Argo CD voit aussi que ce Secret est « enfant » du SealedSecret, et ne le considère plus comme une ressource à lui.
+
+Les deux sites répondent toujours (`/api/hotels` → 200 sur 8081 et 8082) : les valeurs sont les mêmes, les pods ne voient aucune différence.
+
+
+Preuve que les nouveaux Secrets sont bons : après un redémarrage forcé, `hotels-service` se reconnecte à PostgreSQL avec le mot de passe lu dans le Secret recréé.
+
+```
+$ kubectl -n staybook-dev rollout restart deploy/hotels-service
+deployment "hotels-service" successfully rolled out
+$ curl -s http://localhost:8081/api/hotels | head -c 80
+[{"id":1,"name":"Le Grand Paris","city":"Paris","stars":5,...
+```
+
+
+### Question 27
+
+_Si vous mettiez un autre `POSTGRES_PASSWORD` dans le SealedSecret de prod et poussiez, le mot de passe réel de PostgreSQL changerait-il ? Que faudrait-il faire pour changer vraiment un mot de passe ?_
+
+Non. PostgreSQL ne lit `POSTGRES_PASSWORD` qu'**au tout premier démarrage**, quand son répertoire de données est vide. Ensuite, le mot de passe est stocké dans la base, sur le **volume persistant** (PVC `data-postgres-hotels-0`), qui survit aux redémarrages.
+
+On aurait donc un Secret avec le nouveau mot de passe et une base qui attend toujours l'ancien : `hotels-service` (qui lit le Secret) ne pourrait plus se connecter.
+
+Pour vraiment changer le mot de passe :
+1. le changer **dans PostgreSQL** : `ALTER USER hotels WITH PASSWORD '…';` (via `kubectl exec` dans le pod postgres) ;
+2. mettre la même valeur dans le SealedSecret, commiter, pousser ;
+3. redémarrer les services qui l'utilisent (`kubectl rollout restart deploy/hotels-service`).
+
+(Ou, en dev seulement : supprimer le PVC pour repartir d'une base vide, mais on perd les données.)
+
+
+### Question 28
+
+_Quel message obtenez-vous ? Expliquez-le : qu'est-ce qui entre dans le chiffrement, en plus de la valeur ? Cherchez `--scope` dans `kubeseal --help` : quels sont les deux autres modes et quand sont-ils justifiés ? Enfin : vous venez de faire un `kubectl apply` dans la prod. Argo CD a-t-il réagi ? Pourquoi ?_
+
+```
+NAME       STATUS                            SYNCED   AGE
+test-dev   no key could decrypt secret (a)   False    7s
+
+Warning  ErrUnsealFailed  sealed-secrets  Failed to unseal: no key could decrypt secret (a)
+```
+
+Le contrôleur refuse de déchiffrer : par défaut (scope **`strict`**), le **nom** du Secret et son **namespace** entrent dans le chiffrement en plus de la valeur. Un SealedSecret chiffré pour `staybook-dev` ne peut donc pas être déchiffré dans `staybook-prod`, même si on change le namespace à la main. Ça empêche de copier un secret de dev en prod (ou de voler celui d'une autre équipe).
+
+Les deux autres modes de `--scope` :
+- **`namespace-wide`** : seul le namespace compte, on peut renommer le Secret. Utile si le nom n'est pas connu à l'avance ou change.
+- **`cluster-wide`** : ni le nom ni le namespace ne comptent, le secret se déchiffre partout. À réserver aux secrets vraiment partagés par tout le cluster (par exemple des identifiants de registre d'images).
+
+Argo CD n'a **pas réagi** : `staybook-prod` est resté `Synced / Healthy`. `test-dev` n'est pas dans Git et ne porte pas le label de suivi d'Argo CD : ce n'est pas une ressource de l'Application, donc Argo CD l'ignore (le selfHeal et le prune ne concernent que ses propres ressources). Un `kubectl apply` direct en prod passe donc inaperçu pour Argo CD, d'où l'intérêt de limiter les droits `kubectl` sur la prod.
