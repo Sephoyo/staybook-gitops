@@ -1,7 +1,0 @@
-# Fichier de test pour la partie 8.5 (prune) : à supprimer avec git rm
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: test-prune
-data:
-  message: "Ce ConfigMap doit disparaître du cluster quand ce fichier est supprimé de Git"
