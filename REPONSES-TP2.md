@@ -297,3 +297,36 @@ InvalidSpecError  application destination server 'https://kubernetes.default.svc
 Les pods de dev n'ont pas été touchés (toujours les mêmes, aucun redémarrage), et rien n'a été déployé dans `staybook-prod`.
 
 C'est **Argo CD** qui a bloqué, grâce à l'**AppProject `staybook-dev`** : ses `destinations` n'autorisent que le namespace `staybook-dev`. L'Application a bien été modifiée par `root`, mais Argo CD refuse de la synchroniser vers un namespace interdit.
+
+Réparé par Git avec `git revert --no-edit HEAD && git push` : après un refresh de `root`, `staybook-dev` redevient `Synced / Healthy` dans `staybook-dev`.
+
+
+### Question 21
+
+_Dans une entreprise, qui devrait avoir le droit de modifier `argocd/apps/00-projects.yaml` ? Cherchez CODEOWNERS et « branch protection » sur GitHub : comment protéger ce seul fichier sans bloquer les développeurs sur le reste du dépôt ?_
+
+Seulement l'équipe **plateforme / ops** : ce fichier fixe les droits de toutes les autres équipes. Un développeur qui peut le modifier peut s'autoriser la prod.
+
+Sur GitHub :
+- un fichier **`CODEOWNERS`** (dans `.github/`) qui désigne les propriétaires de ce fichier :
+  ```
+  /argocd/apps/00-projects.yaml   @mon-org/plateforme
+  ```
+- une **règle de protection de branche** sur `main` : pull request obligatoire et **« Require review from Code Owners »**.
+
+Résultat : une PR qui touche `00-projects.yaml` doit être approuvée par l'équipe plateforme, alors que les autres fichiers (overlays, manifests) suivent les règles normales et ne bloquent pas les développeurs.
+
+
+## Étape 3 — Des secrets qui peuvent vivre dans Git
+
+### Question 22
+
+_Cette Application n'a pas de `path` : qu'y a-t-il à la place ? Où sont les values du chart ? Qui exécute Helm, et quand ? Que va renvoyer `helm list -n kube-system` une fois le contrôleur installé, et pourquoi ?_
+
+À la place de `path`, il y a **`chart: sealed-secrets`** + `targetRevision: 2.20.0` : la source est un **dépôt de charts Helm** (`https://bitnami.github.io/sealed-secrets`), pas un dépôt Git.
+
+Les values sont **directement dans l'Application**, sous `spec.source.helm.valuesObject` (ici `fullnameOverride: sealed-secrets-controller`).
+
+C'est le **repo-server d'Argo CD** qui exécute Helm, à chaque refresh : il fait un `helm template` pour générer les manifests, puis le controller les applique comme n'importe quel YAML.
+
+`helm list -n kube-system` renverra une **liste vide** : Argo CD n'utilise Helm que pour générer le YAML, il ne fait jamais `helm install`. Il n'y a donc pas de « release » Helm dans le cluster (pas de Secret `sh.helm.release…`). C'est Argo CD qui suit l'installation, pas Helm.
