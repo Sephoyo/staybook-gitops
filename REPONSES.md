@@ -533,7 +533,14 @@ _Après le rollback (a), l'auto-sync est-il toujours actif ? Pourquoi Argo CD fa
 
 Réponse :
 
-**Non, l'auto-sync n'est plus actif.** Argo CD refuse le rollback tant que la synchronisation automatique est activée (message du type `rollback cannot be initiated when auto-sync is enabled`). Il faut d'abord désactiver l'auto-sync (`argocd app set staybook --sync-policy none`). Après le rollback, l'application reste en sync **manuel**, et `OutOfSync` puisque Git demande toujours v3.
+**Non, l'auto-sync n'est plus actif.** Argo CD refuse le rollback tant que la synchronisation automatique est activée :
+
+```
+$ argocd app rollback staybook 5
+rpc error: code = FailedPrecondition desc = rollback cannot be initiated when auto-sync is enabled
+```
+
+ Il faut d'abord désactiver l'auto-sync (`argocd app set staybook --sync-policy none`). Après le rollback, l'application reste en sync **manuel**, et `OutOfSync` puisque Git demande toujours v3.
 
 Raison : un rollback remet le cluster dans un état **différent de Git**. Si l'auto-sync restait actif, Argo CD resynchroniserait immédiatement sur le HEAD de Git, c'est-à-dire sur la v3 cassée, et annulerait le rollback. Argo CD « débranche » donc l'automatisme pour que le retour arrière tienne, le temps de corriger Git.
 
@@ -548,7 +555,19 @@ _Reliez chaque entrée de `argocd app history staybook` à un commit de `git log
 
 Réponse :
 
-Chaque ligne de `argocd app history staybook` (ID, date de sync, révision) contient le **SHA du commit Git** déployé. Ce SHA correspond à une ligne de `git log --oneline` : les 7 premiers caractères sont identiques. Par exemple, l'ID `0` ↔ `7231e31 feat: StayBook manifests + Argo CD install (v1)`. Le rollback (a) apparaît comme une entrée supplémentaire qui redéploie une **ancienne** révision. Le `git revert` apparaît comme un nouveau commit « Revert … ».
+Chaque ligne de `argocd app history staybook` (ID, date de sync, révision) contient le **SHA du commit Git** déployé. Ce SHA correspond à une ligne de `git log --oneline` : les 7 premiers caractères sont identiques. Correspondance observée :
+
+| ID Argo CD | Commit | Message |
+|---|---|---|
+| 0 | `7231e31` | feat: StayBook manifests + Argo CD install (v1) |
+| 1 | `cac301b` | docs: réponses aux questions 1 à 34 (aucun changement dans `apps/`) |
+| 2 | `41be646` | feat: hotels-service passe à 2 réplicas |
+| 3 | `d4ece1c` | feat: front v2 |
+| 4 | `3d162be` | test: ConfigMap pour le prune |
+| 5 | `e691d18` | test: suppression du ConfigMap de test |
+| 6 | `d296892` | feat: front v3 (image inexistante) |
+
+Le commit `c5d0e3c` (auto-sync) n'a pas d'entrée : il ne modifie que `argocd/`, dossier que l'Application `staybook` (path `apps/staybook`) ne surveille pas. Le rollback (a) apparaît comme une entrée supplémentaire qui redéploie une **ancienne** révision. Le `git revert` apparaît comme un nouveau commit « Revert … ».
 
 Réponse à l'auditeur : **tout est dans Git**, en **une commande** (deux pour croiser avec les dates de déploiement effectives) :
 
