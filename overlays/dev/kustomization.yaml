@@ -9,4 +9,4 @@ resources:
 images:
 - name: staybook-front
   newName: ghcr.io/sephoyo/staybook-front
-  newTag: sha-314fdcb
+  newTag: sha-1a19972
