@@ -540,3 +540,28 @@ ghcr.io/sephoyo/staybook-front   sha-314fdcb   d21a85c1c2bc9   21.8MB
 ```
 
 La mise en prod est une décision humaine, faite par pull request (partie 4.5).
+
+
+### Question 34
+
+_Pourquoi une pull request pour prod et un commit direct pour dev ? Quels réglages GitHub rendraient ce circuit obligatoire ? Avec deux réplicas, le site prod est-il resté disponible pendant le déploiement ? Vérifiez dans `rollout history`._
+
+En **dev**, on veut aller vite : chaque version construite par la CI y est déployée automatiquement, et une erreur n'a pas de conséquence pour les clients. En **prod**, un **humain décide** : la PR montre exactement ce qui change (ici une seule ligne, le tag d'image), elle peut être relue et approuvée, et elle laisse une trace de **qui** a validé la mise en prod et **quand**.
+
+Pour rendre ce circuit obligatoire (cf. Q21) : une **protection de branche** sur `main` (pull request obligatoire, au moins une approbation, pas de push direct), et un **`CODEOWNERS`** sur `overlays/prod/` pour que les responsables de la prod approuvent. La CI doit alors pouvoir pousser seulement sur `overlays/dev` (par exemple via une règle qui l'autorise à contourner la protection, ou en lui faisant ouvrir une PR auto-mergée pour dev).
+
+Oui, la prod est restée disponible : avec 2 réplicas et le `RollingUpdate` (`maxUnavailable: 25%` arrondi à 0), Kubernetes crée les nouveaux pods avant de supprimer les anciens, et il y a toujours au moins 2 pods prêts.
+
+```
+$ kubectl -n staybook-prod get rs -l app=front
+NAME               DESIRED   CURRENT   READY   AGE
+front-5c76dcf44c   0         0         0       19m    # ancienne version (v1)
+front-df46b977b    2         2         2       12s    # nouvelle version (sha-1a19972)
+
+$ kubectl -n staybook-prod rollout history deploy/front
+REVISION  CHANGE-CAUSE
+1         <none>
+2         <none>
+```
+
+Deux révisions : l'ancien ReplicaSet est passé à 0 seulement une fois le nouveau à 2/2. http://localhost:8082 affiche maintenant `<title>StayBook v2</title>`.
