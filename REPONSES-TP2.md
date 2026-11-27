@@ -453,3 +453,90 @@ Les deux autres modes de `--scope` :
 - **`cluster-wide`** : ni le nom ni le namespace ne comptent, le secret se déchiffre partout. À réserver aux secrets vraiment partagés par tout le cluster (par exemple des identifiants de registre d'images).
 
 Argo CD n'a **pas réagi** : `staybook-prod` est resté `Synced / Healthy`. `test-dev` n'est pas dans Git et ne porte pas le label de suivi d'Argo CD : ce n'est pas une ressource de l'Application, donc Argo CD l'ignore (le selfHeal et le prune ne concernent que ses propres ressources). Un `kubectl apply` direct en prod passe donc inaperçu pour Argo CD, d'où l'intérêt de limiter les droits `kubectl` sur la prod.
+
+
+## Étape 4 — La CI ferme la boucle
+
+### Question 29
+
+_Placez chaque flèche dans CI ou CD. À quel moment un accès au cluster est-il nécessaire, et qui le détient ? GitHub Actions a-t-il besoin d'un kubeconfig ?_
+
+| Flèche | CI ou CD |
+|---|---|
+| `git push` (front/) → GitHub Actions construit l'image | CI |
+| GitHub Actions pousse l'image sur ghcr.io | CI |
+| GitHub Actions commite le nouveau tag dans `overlays/dev` | CD (on déclare ce qui doit tourner) |
+| Argo CD voit le commit et déploie en dev | CD |
+| Pull request `overlays/prod` → Argo CD déploie en prod | CD |
+
+Le seul moment où on touche au cluster, c'est quand Argo CD applique les manifests. Et c'est **Argo CD**, à l'intérieur du cluster, qui détient ces droits.
+
+GitHub Actions n'a **pas besoin de kubeconfig** : il n'écrit que dans le registre (ghcr.io) et dans le dépôt GitOps. C'est le modèle pull.
+
+
+### Question 30
+
+_Le workflow a deux jobs. Lequel est la CI, lequel est le CD ? Pourquoi le premier se contente-t-il du `GITHUB_TOKEN` automatique alors que le second a besoin d'un secret `GITOPS_TOKEN` ? Pourquoi construire pour deux plateformes ?_
+
+- **`build-push`** est la **CI** : il construit l'image et la publie sur ghcr.io.
+- **`update-gitops`** est le **CD** : il écrit le nouveau tag dans `overlays/dev/kustomization.yaml` du dépôt GitOps.
+
+Le `GITHUB_TOKEN` automatique ne donne des droits que sur **le dépôt où tourne le workflow** (`staybook-src`) et ses packages : `packages: write` suffit pour publier l'image. Le second job doit écrire dans **un autre dépôt** (`staybook-gitops`), ce que `GITHUB_TOKEN` ne permet pas : il faut un token dédié, `GITOPS_TOKEN`.
+
+Deux plateformes (`linux/amd64` et `linux/arm64`) : les runners GitHub et la plupart des serveurs sont en amd64, mais un Mac Apple Silicon (et donc son nœud kind) est en **arm64**. Une image multi-plateforme marche partout, chaque machine tire la bonne variante.
+
+
+### Question 31
+
+_Comparez ce token avec celui du TP 1 (Contents : Read-only, donné à Argo CD). Pourquoi deux tokens et pas un seul « qui fait tout » ? Si la CI est compromise, que peut faire l'attaquant, et que ne peut-il pas faire ?_
+
+| Token | Qui l'utilise | Droits |
+|---|---|---|
+| TP 1 | Argo CD | **lecture** de `staybook-gitops` |
+| `staybook-ci` | GitHub Actions | **lecture/écriture** de `staybook-gitops`, rien d'autre |
+
+Deux tokens, c'est le **moindre privilège** : chacun n'a que ce dont il a besoin. Argo CD n'a pas à écrire dans Git, et si un token fuite, les dégâts sont limités à ses propres droits.
+
+Si la CI est compromise, l'attaquant **peut** pousser des commits dans `staybook-gitops` (par exemple changer l'image de dev vers une image piégée) et publier des images sur ghcr.io.
+
+Il **ne peut pas** accéder directement au cluster (pas de kubeconfig), ni lire les secrets du cluster, ni toucher à ses autres dépôts. Et chaque modification qu'il fait reste **visible dans l'historique Git**, donc détectable et annulable avec un `git revert`. La prod, elle, passe par une pull request relue par un humain.
+
+
+### Question 32
+
+_Si l'image restait privée, que verriez-vous côté cluster ? Pourquoi le site dev continue-t-il de répondre pendant ce temps ?_
+
+Ici l'image était déjà accessible : le nouveau pod front a démarré directement avec `ghcr.io/sephoyo/staybook-front:sha-314fdcb` (dépôt `staybook-src` public).
+
+Si elle était privée, kind ne pourrait pas la télécharger sans identifiants : le nouveau pod front resterait en **`ErrImagePull`** puis **`ImagePullBackOff`** (erreur `401 Unauthorized` / `not found` côté registre), et l'application `staybook-dev` passerait en `Progressing` puis `Degraded`.
+
+Le site dev continue de répondre grâce au **rolling update** : Kubernetes ne supprime l'ancien pod que quand le nouveau est `Ready`. Le nouveau ne l'étant jamais, l'ancien pod (image `v1`) continue de servir le trafic. C'est le même mécanisme que la v3 cassée du TP 1.
+
+
+### Question 33
+
+_Décrivez la chaîne complète entre votre `git push` et le nouveau titre sur 8081 : qui a fait quoi, dans quel dépôt, et comment l'image est-elle arrivée dans kind cette fois ? Pourquoi 8082 n'a-t-il pas changé ?_
+
+1. **Moi** : je change le `<title>` dans `staybook-src`, commit `1a19972`, `git push`.
+2. **GitHub Actions, job CI** (dans `staybook-src`) : le push touche `front/**`, donc le workflow démarre. Il construit l'image et la pousse sur ghcr.io : `ghcr.io/sephoyo/staybook-front:sha-1a19972`.
+3. **GitHub Actions, job CD** : il clone `staybook-gitops`, fait `kustomize edit set image` dans `overlays/dev`, puis commite et pousse : `ef0b7e2 ci(dev): front sha-1a19972 (Sephoyo/staybook-src@1a19972)`.
+4. **Argo CD** voit le nouveau commit (refresh), passe `staybook-dev` en `OutOfSync`, puis synchronise : le Deployment `front` de dev change d'image.
+5. **Kubernetes** fait un rolling update. Le kubelet **télécharge lui-même l'image depuis ghcr.io**.
+6. Le nouveau pod est `Ready`, l'ancien est supprimé : http://localhost:8081 affiche `<title>StayBook v2</title>`.
+
+Au TP 1, c'est moi qui construisais l'image et la chargeais dans le nœud avec `kind load`. Cette fois, personne ne touche au nœud : il **tire l'image depuis un registre**, comme un vrai cluster.
+
+```
+$ docker exec argocd-tp-control-plane crictl images | grep ghcr
+ghcr.io/sephoyo/staybook-front   sha-1a19972   5389c0c4bb662   21.8MB
+ghcr.io/sephoyo/staybook-front   sha-314fdcb   d21a85c1c2bc9   21.8MB
+```
+
+8082 (prod) n'a pas changé parce que la CI ne modifie **que `overlays/dev`**. `overlays/prod` demande toujours `staybook-front:v1` :
+
+```
+8081: <title>StayBook v2</title>
+8082: <title>Booking - Reservation d'hotels</title>
+```
+
+La mise en prod est une décision humaine, faite par pull request (partie 4.5).
