@@ -565,3 +565,20 @@ REVISION  CHANGE-CAUSE
 ```
 
 Deux révisions : l'ancien ReplicaSet est passé à 0 seulement une fois le nouveau à 2/2. http://localhost:8082 affiche maintenant `<title>StayBook v2</title>`.
+
+
+### Question 35
+
+_Pourquoi `-m 1` ? Comparez avec les deux rollbacks du TP 1 (question 33) : `argocd app rollback` et `git revert`. Lequel avez-vous le droit d'utiliser maintenant que la prod est en auto-sync, et pourquoi ?_
+
+Le commit à annuler est un **commit de merge** : il a deux parents (`main` avant la PR, et la branche `promote-front-prod`). Git ne sait pas tout seul par rapport à quel parent calculer l'annulation. **`-m 1`** dit : garde le parent n°1, la `main` d'avant le merge, et annule ce que la branche a apporté.
+
+```
+219955e Revert "Merge pull request #1 from Sephoyo/promote-front-prod"
+0fe7605 docs: réponse Q34
+5617586 Merge pull request #1 from Sephoyo/promote-front-prod
+```
+
+Résultat : Argo CD resynchronise la prod, qui revient à `staybook-front:v1`.
+
+Avec la prod en auto-sync, seul **`git revert`** est utilisable. `argocd app rollback` est refusé (`rollback cannot be initiated when auto-sync is enabled`, vu au TP 1). Et même en désactivant l'auto-sync, il mettrait le cluster en désaccord avec Git. `git revert` corrige la **source de vérité** : c'est un commit tracé, relu, et Argo CD fait converger la prod tout seul.
